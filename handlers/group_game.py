@@ -1,44 +1,37 @@
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.types import CallbackQuery, Message
 from bson import ObjectId
 import asyncio
+import random
 
 from database.mongo import quizzes_collection, games_collection
+from config import BOT_TOKEN
 
 router = Router()
+bot = Bot(BOT_TOKEN)
 
-# START QUIZ (Private → send to group instruction)
+# START QUIZ BUTTON
 @router.callback_query(F.data.startswith("start_"))
 async def start_quiz(callback: CallbackQuery):
     quiz_id = callback.data.split("_")[1]
 
-    text = (
-        "🚀 To start this quiz in a group:\n\n"
-        "1. Add this bot to your group\n"
-        "2. Send this command in group:\n\n"
+    await callback.message.answer(
+        "Add bot to group and run:\n"
         f"/startquiz {quiz_id}"
     )
 
-    await callback.message.answer(text)
-
-
-# GROUP COMMAND
+# GROUP START
 @router.message(F.text.startswith("/startquiz"))
 async def group_start(message: Message):
     if message.chat.type == "private":
-        return await message.answer("❌ Use this in group.")
+        return await message.answer("Use in group.")
 
-    parts = message.text.split()
-    if len(parts) != 2:
-        return await message.answer("Usage: /startquiz quiz_id")
-
-    quiz_id = parts[1]
+    quiz_id = message.text.split()[1]
     quiz = await quizzes_collection.find_one({"_id": ObjectId(quiz_id)})
 
     if not quiz:
         return await message.answer("Quiz not found.")
 
-    # create game session
     await games_collection.insert_one({
         "quiz_id": quiz_id,
         "chat_id": message.chat.id,
@@ -49,13 +42,10 @@ async def group_start(message: Message):
     })
 
     await message.answer(
-        "🎮 Quiz Ready!\n\n"
+        "🎮 Quiz Ready!\n"
         "Minimum 2 players required.\n"
-        "Send /ready to join."
+        "Type /ready"
     )
 
-
-# READY SYSTEM
-@router.message(F.text == "/ready")
-async def player_ready(message: Message):
-    game = await
+# READY
+@router.message(F.text == "/ready
