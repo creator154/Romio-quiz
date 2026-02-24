@@ -1,7 +1,8 @@
 from aiogram.fsm.state import State, StatesGroup
 
-class CreateQuiz(StatesGroup):
-    waiting_for_title = State()
-    waiting_for_description = State()
-    waiting_for_question = State()
-    waiting_for_poll = State()
+class QuizBuilder(StatesGroup):
+    waiting_title = State()
+    waiting_description = State()
+    waiting_poll = State()
+    editing_title = State()
+    editing_description = State()
