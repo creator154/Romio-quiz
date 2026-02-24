@@ -3,8 +3,13 @@ import os
 import random
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
-    Message, CallbackQuery,
-    InlineKeyboardMarkup, InlineKeyboardButton
+    Message,
+    CallbackQuery,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardRemove,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton
 )
 from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -13,194 +18,221 @@ from aiogram.fsm.state import StatesGroup, State
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-bot = Bot(token=TOKEN)
+bot = Bot(TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# ================= STORAGE =================
-quizzes = {}          # saved quizzes
-active_games = {}     # running games
+quizzes = {}
+active_games = {}
+ready_players = {}
 
 # ================= STATES =================
-class CreateQuiz(StatesGroup):
+class QuizBuild(StatesGroup):
     title = State()
     description = State()
     collecting = State()
     timer = State()
     shuffle = State()
 
-# ================= START =================
+# ================= START MENU =================
 @dp.message(Command("start"))
 async def start(message: Message):
-    await message.answer("📚 Advanced Quiz Bot\n\n/create - Create Quiz")
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🆕 Create New Quiz")],
+            [KeyboardButton(text="📂 View My Quizzes")]
+        ],
+        resize_keyboard=True
+    )
+    await message.answer("🏠 Welcome to Quiz Bot", reply_markup=kb)
 
 # ================= CREATE =================
-@dp.message(Command("create"))
-async def create(message: Message, state: FSMContext):
-    await state.set_state(CreateQuiz.title)
-    await message.answer("Send Quiz Title:")
+@dp.message(F.text == "🆕 Create New Quiz")
+async def create_quiz(message: Message, state: FSMContext):
+    await state.set_state(QuizBuild.title)
+    await message.answer("Send Quiz Title:", reply_markup=ReplyKeyboardRemove())
 
-@dp.message(CreateQuiz.title)
+@dp.message(QuizBuild.title)
 async def set_title(message: Message, state: FSMContext):
     await state.update_data(title=message.text, questions=[])
-    await state.set_state(CreateQuiz.description)
-    await message.answer("Send Description:")
+    await state.set_state(QuizBuild.description)
+    await message.answer("Send Description or type /skip")
 
-@dp.message(CreateQuiz.description)
+@dp.message(Command("skip"), QuizBuild.description)
+async def skip_desc(message: Message, state: FSMContext):
+    await state.update_data(description="")
+    await ask_add_question(message, state)
+
+@dp.message(QuizBuild.description)
 async def set_desc(message: Message, state: FSMContext):
     await state.update_data(description=message.text)
-    await state.set_state(CreateQuiz.collecting)
+    await ask_add_question(message, state)
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Add Question (Send Quiz Poll)", callback_data="info")]
-    ])
-
-    await message.answer(
-        "Now send QUIZ type polls.\nWhen finished press /done",
-        reply_markup=kb
+async def ask_add_question(message: Message, state: FSMContext):
+    await state.set_state(QuizBuild.collecting)
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➕ Add Question")],
+            [KeyboardButton(text="✅ Done")]
+        ],
+        resize_keyboard=True
     )
+    await message.answer("Add quiz questions:", reply_markup=kb)
 
-# ================= CAPTURE QUIZ POLL =================
-@dp.message(CreateQuiz.collecting, F.poll)
+# ================= ADD QUESTION =================
+@dp.message(QuizBuild.collecting, F.text == "➕ Add Question")
+async def add_question(message: Message):
+    await message.answer("Send a QUIZ type poll now.")
+
+@dp.message(QuizBuild.collecting, F.poll)
 async def capture_poll(message: Message, state: FSMContext):
     if message.poll.type != "quiz":
-        await message.answer("❌ Only QUIZ type poll allowed.")
+        await message.answer("Only QUIZ poll allowed.")
         return
 
     data = await state.get_data()
-
     data["questions"].append({
         "question": message.poll.question,
         "options": [o.text for o in message.poll.options],
         "correct": message.poll.correct_option_id
     })
-
     await state.update_data(questions=data["questions"])
     await message.answer("✅ Question added.")
 
 # ================= DONE QUESTIONS =================
-@dp.message(Command("done"))
+@dp.message(QuizBuild.collecting, F.text == "✅ Done")
 async def done_questions(message: Message, state: FSMContext):
-    await state.set_state(CreateQuiz.timer)
+    await state.set_state(QuizBuild.timer)
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="10s", callback_data="timer_10"),
-            InlineKeyboardButton(text="20s", callback_data="timer_20"),
-            InlineKeyboardButton(text="30s", callback_data="timer_30")
-        ]
-    ])
-
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="10 sec"), KeyboardButton(text="20 sec")],
+            [KeyboardButton(text="30 sec")]
+        ],
+        resize_keyboard=True
+    )
     await message.answer("Select Timer:", reply_markup=kb)
 
 # ================= TIMER =================
-@dp.callback_query(F.data.startswith("timer_"))
-async def set_timer(call: CallbackQuery, state: FSMContext):
-    timer = int(call.data.split("_")[1])
+@dp.message(QuizBuild.timer)
+async def set_timer(message: Message, state: FSMContext):
+    timer = int(message.text.split()[0])
     await state.update_data(timer=timer)
-    await state.set_state(CreateQuiz.shuffle)
+    await state.set_state(QuizBuild.shuffle)
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Shuffle ON 🔀", callback_data="shuffle_on"),
-            InlineKeyboardButton(text="Shuffle OFF", callback_data="shuffle_off")
-        ]
-    ])
-
-    await call.message.answer("Shuffle Questions?", reply_markup=kb)
-    await call.answer()
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Shuffle ON")],
+            [KeyboardButton(text="Shuffle OFF")]
+        ],
+        resize_keyboard=True
+    )
+    await message.answer("Shuffle questions?", reply_markup=kb)
 
 # ================= SHUFFLE =================
-@dp.callback_query(F.data.startswith("shuffle_"))
-async def set_shuffle(call: CallbackQuery, state: FSMContext):
-    shuffle = call.data.split("_")[1] == "on"
-
+@dp.message(QuizBuild.shuffle)
+async def set_shuffle(message: Message, state: FSMContext):
+    shuffle = message.text == "Shuffle ON"
     data = await state.get_data()
-    user_id = call.from_user.id
 
     if shuffle:
         random.shuffle(data["questions"])
 
     data["shuffle"] = shuffle
+    user_id = message.from_user.id
     quizzes[user_id] = data
 
     await state.clear()
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚀 Start in Group", callback_data=f"start_{user_id}")]
+        [InlineKeyboardButton(text="🚀 Start The Quiz", callback_data=f"start_{user_id}")]
     ])
 
-    await call.message.answer(
-        f"🎉 Quiz Saved!\n"
-        f"Questions: {len(data['questions'])}\n"
-        f"Timer: {data['timer']} sec\n"
-        f"Shuffle: {'ON' if shuffle else 'OFF'}",
-        reply_markup=kb
-    )
+    await message.answer("Quiz Saved!", reply_markup=kb)
 
-    await call.answer()
-
-# ================= START GAME =================
+# ================= START QUIZ =================
 @dp.callback_query(F.data.startswith("start_"))
-async def start_game(call: CallbackQuery):
+async def start_quiz(call: CallbackQuery):
     owner = int(call.data.split("_")[1])
 
-    if owner not in quizzes:
-        await call.answer("Quiz not found.")
-        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Start in Group", callback_data=f"group_{owner}")]
+    ])
 
+    await call.message.answer("Where do you want to start?", reply_markup=kb)
+    await call.answer()
+
+# ================= GROUP START =================
+@dp.callback_query(F.data.startswith("group_"))
+async def group_start(call: CallbackQuery):
+    owner = int(call.data.split("_")[1])
     chat_id = call.message.chat.id
-    quiz = quizzes[owner]
+
+    ready_players[chat_id] = set()
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="I'm Ready", callback_data=f"ready_{owner}")]
+    ])
 
     active_games[chat_id] = {
-        "questions": quiz["questions"],
-        "timer": quiz["timer"],
+        "owner": owner,
         "current": 0,
         "scores": {}
     }
 
-    await call.message.answer("🚀 Quiz Started!")
-    await send_question(chat_id)
+    await call.message.answer("Click Ready (Min 2 players)", reply_markup=kb)
     await call.answer()
+
+@dp.callback_query(F.data.startswith("ready_"))
+async def ready(call: CallbackQuery):
+    chat_id = call.message.chat.id
+    ready_players[chat_id].add(call.from_user.id)
+
+    if len(ready_players[chat_id]) >= 2:
+        await call.message.answer("🚀 Quiz Starting...")
+        await send_question(chat_id)
+    else:
+        await call.answer("Waiting for more players...")
 
 # ================= SEND QUESTION =================
 async def send_question(chat_id):
     game = active_games[chat_id]
+    quiz = quizzes[game["owner"]]
 
-    if game["current"] >= len(game["questions"]):
+    if game["current"] >= len(quiz["questions"]):
         await finish_game(chat_id)
         return
 
-    q = game["questions"][game["current"]]
+    q = quiz["questions"][game["current"]]
 
     await bot.send_poll(
-        chat_id=chat_id,
-        question=q["question"],
-        options=q["options"],
+        chat_id,
+        q["question"],
+        q["options"],
         type="quiz",
         correct_option_id=q["correct"],
         is_anonymous=False,
-        open_period=game["timer"]
+        open_period=quiz["timer"]
     )
 
     game["current"] += 1
 
-# ================= HANDLE ANSWERS =================
+# ================= ANSWERS =================
 @dp.poll_answer()
 async def handle_answer(poll_answer):
     user = poll_answer.user
-    option = poll_answer.option_ids[0]
 
     for chat_id, game in active_games.items():
-        current_index = game["current"] - 1
-        if current_index < 0:
+        idx = game["current"] - 1
+        if idx < 0:
             continue
 
-        correct = game["questions"][current_index]["correct"]
+        correct = quizzes[game["owner"]]["questions"][idx]["correct"]
+        selected = poll_answer.option_ids[0]
 
         if user.id not in game["scores"]:
             game["scores"][user.id] = 0
 
-        if option == correct:
+        if selected == correct:
             game["scores"][user.id] += 4
         else:
             game["scores"][user.id] -= 1
@@ -211,7 +243,6 @@ async def finish_game(chat_id):
     leaderboard = sorted(game["scores"].items(), key=lambda x: x[1], reverse=True)
 
     text = "🏁 Quiz Finished!\n\n"
-
     medals = ["🥇", "🥈", "🥉"]
 
     for i, (uid, score) in enumerate(leaderboard):
