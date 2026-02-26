@@ -1,6 +1,7 @@
 import os
 import uuid
 import random
+import asyncio
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -26,19 +27,9 @@ TITLE, DESCRIPTION, QUESTION, OPTION1, OPTION2, OPTION3, OPTION4, CORRECT, ADD_M
 # ---------------- START ----------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-
-    if args:
-        quiz_id = args[0]
-        if quiz_id in context.bot_data.get("quizzes", {}):
-            await show_quiz_panel(update.message, context, quiz_id)
-            return
-
-    keyboard = [
-        [InlineKeyboardButton("➕ Create Quiz", callback_data="create")]
-    ]
+    keyboard = [[InlineKeyboardButton("➕ Create Quiz", callback_data="create")]]
     await update.message.reply_text(
-        "🎯 Welcome to Quiz Bot",
+        "🎯 Welcome to Pro Quiz Bot",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -58,7 +49,8 @@ async def get_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "timer": 15,
         "shuffle": False,
         "scores": {},
-        "current_index": 0
+        "players": set(),
+        "current_index": 0,
     }
     await update.message.reply_text("Send Description or /skip")
     return DESCRIPTION
@@ -73,10 +65,7 @@ async def skip_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return QUESTION
 
 async def get_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["current_q"] = {
-        "question": update.message.text,
-        "options": []
-    }
+    context.user_data["current_q"] = {"question": update.message.text, "options": []}
     await update.message.reply_text("Option 1:")
     return OPTION1
 
@@ -108,10 +97,7 @@ async def correct(update, context):
         [InlineKeyboardButton("➕ Add More", callback_data="more")],
         [InlineKeyboardButton("✅ Done", callback_data="done")]
     ]
-    await update.message.reply_text(
-        "Add more questions?",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await update.message.reply_text("Add more questions?", reply_markup=InlineKeyboardMarkup(keyboard))
     return ADD_MORE
 
 async def add_more(update, context):
@@ -130,10 +116,7 @@ async def set_timer(update, context):
         [InlineKeyboardButton("🔀 Shuffle", callback_data="shuffle_yes")],
         [InlineKeyboardButton("➡ No Shuffle", callback_data="shuffle_no")]
     ]
-    await update.message.reply_text(
-        "Shuffle questions?",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await update.message.reply_text("Shuffle questions?", reply_markup=InlineKeyboardMarkup(keyboard))
     return SHUFFLE
 
 async def set_shuffle(update, context):
@@ -144,52 +127,56 @@ async def set_shuffle(update, context):
     context.bot_data.setdefault("quizzes", {})
     context.bot_data["quizzes"][quiz["id"]] = quiz
 
-    await show_quiz_panel(update.callback_query.message, context, quiz["id"])
+    await update.callback_query.message.reply_text(
+        f"Quiz Created ✅\n\nUse this in group to start."
+    )
+
     return ConversationHandler.END
 
-# ---------------- PANEL ----------------
-
-async def show_quiz_panel(message, context, quiz_id):
-    quiz = context.bot_data["quizzes"][quiz_id]
-
-    text = (
-        f"<b>{quiz['title']}</b>\n"
-        f"{quiz['description'] or 'No description'}\n\n"
-        f"🖊 {len(quiz['questions'])} Questions\n"
-        f"⏱ {quiz['timer']} sec\n"
-        f"{'🔀 Shuffle' if quiz['shuffle'] else '➡ No Shuffle'}"
-    )
-
-    keyboard = [
-        [InlineKeyboardButton("▶ Start Quiz (Group)", callback_data=f"start_{quiz_id}")]
-    ]
-
-    await message.reply_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-# ---------------- QUIZ ENGINE ----------------
+# ---------------- LOBBY SYSTEM ----------------
 
 async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     if query.message.chat.type == "private":
-        await query.message.reply_text("❌ Start this quiz inside a group.")
+        await query.message.reply_text("❌ Start inside a group.")
         return
 
     quiz_id = query.data.split("_")[1]
     quiz = context.bot_data["quizzes"][quiz_id]
 
-    if quiz["shuffle"]:
-        random.shuffle(quiz["questions"])
-
+    quiz["players"] = set()
     quiz["scores"] = {}
     quiz["current_index"] = 0
 
-    await send_next_question(context, query.message.chat_id, quiz_id)
+    keyboard = [[InlineKeyboardButton("🎮 Join Quiz", callback_data=f"join_{quiz_id}")]]
+    await query.message.reply_text(
+        "Waiting for players...\nMinimum 2 required.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def join_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    quiz_id = query.data.split("_")[1]
+    quiz = context.bot_data["quizzes"][quiz_id]
+
+    quiz["players"].add(query.from_user.id)
+    await query.message.reply_text(f"{query.from_user.first_name} joined!")
+
+    if len(quiz["players"]) >= 2:
+        await start_countdown(context, query.message.chat_id, quiz_id)
+
+async def start_countdown(context, chat_id, quiz_id):
+    for i in range(5, 0, -1):
+        await context.bot.send_message(chat_id, f"Starting in {i}...")
+        await asyncio.sleep(1)
+
+    await send_next_question(context, chat_id, quiz_id)
+
+# ---------------- QUIZ ENGINE ----------------
 
 async def send_next_question(context, chat_id, quiz_id):
     quiz = context.bot_data["quizzes"][quiz_id]
@@ -198,6 +185,9 @@ async def send_next_question(context, chat_id, quiz_id):
     if index >= len(quiz["questions"]):
         await send_leaderboard(context, chat_id, quiz_id)
         return
+
+    if quiz["shuffle"]:
+        random.shuffle(quiz["questions"])
 
     q = quiz["questions"][index]
 
@@ -213,31 +203,39 @@ async def send_next_question(context, chat_id, quiz_id):
 
     quiz["current_poll"] = message.poll.id
 
+    await asyncio.sleep(quiz["timer"] + 1)
+    quiz["current_index"] += 1
+    await send_next_question(context, chat_id, quiz_id)
+
 async def handle_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = update.poll_answer
 
-    for quiz_id, quiz in context.bot_data["quizzes"].items():
+    for quiz in context.bot_data["quizzes"].values():
         if quiz.get("current_poll") == answer.poll_id:
-            user = answer.user.id
+            if answer.user.id not in quiz["players"]:
+                return
+
             selected = answer.option_ids[0]
             correct = quiz["questions"][quiz["current_index"]]["correct"]
 
-            quiz["scores"].setdefault(user, 0)
+            quiz["scores"].setdefault(answer.user.id, 0)
 
             if selected == correct:
-                quiz["scores"][user] += 4
+                quiz["scores"][answer.user.id] += 4
             else:
-                quiz["scores"][user] -= 1
+                quiz["scores"][answer.user.id] -= 1
 
-            break
+# ---------------- LEADERBOARD ----------------
 
 async def send_leaderboard(context, chat_id, quiz_id):
     quiz = context.bot_data["quizzes"][quiz_id]
     scores = sorted(quiz["scores"].items(), key=lambda x: x[1], reverse=True)
 
     text = "🏆 Final Leaderboard\n\n"
-    for i, (_, score) in enumerate(scores, 1):
-        text += f"{i}. {score} pts\n"
+
+    for i, (user_id, score) in enumerate(scores, 1):
+        member = await context.bot.get_chat_member(chat_id, user_id)
+        text += f"{i}. {member.user.first_name} - {score} pts\n"
 
     await context.bot.send_message(chat_id, text)
 
@@ -272,6 +270,7 @@ conv = ConversationHandler(
 app.add_handler(CommandHandler("start", start))
 app.add_handler(conv)
 app.add_handler(CallbackQueryHandler(start_quiz, pattern="start_"))
+app.add_handler(CallbackQueryHandler(join_quiz, pattern="join_"))
 app.add_handler(PollAnswerHandler(handle_poll))
 
 app.run_polling()
